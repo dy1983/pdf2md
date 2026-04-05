@@ -245,7 +245,7 @@ class ToolContext:
         self.completed: bool = False
 
         # 确保目录存在
-        for d in (self.output_dir, self.raw_dir, self.chapters_dir, self.proofread_dir):
+        for d in (self.output_dir, self.raw_dir, self.chapters_dir, self.proofread_dir, self.images_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def ensure_segments(self, chapter_file: str) -> list[str]:

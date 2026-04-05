@@ -229,9 +229,11 @@ def cmd_agent(args: argparse.Namespace) -> int:
             console.print(f"[red]错误：目录不存在 {chapters_dir}[/red]")
             return 1
 
-        # 推导输出目录
-        book_dir = chapters_dir.parent
-        output_dir = str(book_dir)
+        # 输出目录：优先使用 -o 指定的目录，否则使用章节目录的父目录
+        if args.output != "output":
+            output_dir = str(Path(args.output))
+        else:
+            output_dir = str(chapters_dir.parent)
 
         console.print(
             Panel(
