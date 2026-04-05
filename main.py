@@ -17,6 +17,13 @@ python main.py proofread output/MyBook/chapters/
 
 # 使用指定模型和自定义输出根目录
 python main.py convert book.pdf --model gpt-4o --output results/
+
+# ── Agent 模式 ──────────────────────────────────────────────
+# Agent 驱动完整流程（转换 + 切分 + 自动校对）
+python main.py agent book.pdf
+
+# Agent 仅校对已有章节
+python main.py agent output/MyBook/chapters/ --proofread-only
 """
 from __future__ import annotations
 
@@ -41,6 +48,7 @@ from rich import print as rprint
 
 from config import cfg
 from src.pipeline import PipelineResult, ChapterSummary, run_pipeline
+from src.agent import run_agent_pipeline, run_agent_proofread
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 日志配置
@@ -207,6 +215,89 @@ def cmd_proofread(args: argparse.Namespace) -> int:
     return 0 if not result.error else 1
 
 
+def cmd_agent(args: argparse.Namespace) -> int:
+    if args.model:
+        cfg.llm_model = args.model
+
+    def on_status(msg: str) -> None:
+        console.print(f"  [dim]→ {msg}[/dim]")
+
+    if args.proofread_only:
+        # 仅校对模式
+        chapters_dir = Path(args.input)
+        if not chapters_dir.exists():
+            console.print(f"[red]错误：目录不存在 {chapters_dir}[/red]")
+            return 1
+
+        # 输出目录：优先使用 -o 指定的目录，否则使用章节目录的父目录
+        if args.output != "output":
+            output_dir = str(Path(args.output))
+        else:
+            output_dir = str(chapters_dir.parent)
+
+        console.print(
+            Panel(
+                f"[bold]模式[/bold]：仅校对\n"
+                f"[bold]章节目录[/bold]：{chapters_dir}\n"
+                f"[bold]输出目录[/bold]：{output_dir}\n"
+                f"[bold]模型[/bold]：{cfg.llm_model}",
+                title="[blue]pdf2md Agent[/blue]",
+                border_style="blue",
+            )
+        )
+
+        result = run_agent_proofread(
+            chapters_dir=str(chapters_dir),
+            output_dir=output_dir,
+            model=args.model,
+            on_status=on_status,
+        )
+    else:
+        # 完整流程
+        pdf = Path(args.input)
+        if not pdf.exists():
+            console.print(f"[red]错误：找不到文件 {pdf}[/red]")
+            return 1
+
+        book_name = args.name or pdf.stem
+        output_dir = str(Path(args.output) / book_name)
+
+        console.print(
+            Panel(
+                f"[bold]模式[/bold]：完整流程（转换 + 切分 + 校对）\n"
+                f"[bold]PDF 文件[/bold]：{pdf}\n"
+                f"[bold]输出目录[/bold]：{output_dir}\n"
+                f"[bold]转换器[/bold]：{args.converter or cfg.converter}\n"
+                f"[bold]模型[/bold]：{cfg.llm_model}",
+                title="[blue]pdf2md Agent[/blue]",
+                border_style="blue",
+            )
+        )
+
+        result = run_agent_pipeline(
+            pdf_path=str(pdf),
+            output_dir=output_dir,
+            book_name=book_name,
+            converter=args.converter or cfg.converter,
+            model=args.model,
+            on_status=on_status,
+        )
+
+    # 展示结果
+    status = "[green]✓ 完成[/green]" if result.get("completed") else "[yellow]⚠ 未完成[/yellow]"
+    console.print(
+        Panel(
+            f"[bold]状态[/bold]：{status}\n"
+            f"[bold]输出目录[/bold]：{result.get('output_dir', '')}\n"
+            f"[bold]迭代次数[/bold]：{result.get('iterations', 0)}\n"
+            f"[bold]总耗时[/bold]：{result.get('elapsed_sec', 0)}s",
+            title="[green]Agent 执行结果[/green]" if result.get("completed") else "[yellow]Agent 执行结果[/yellow]",
+            border_style="green" if result.get("completed") else "yellow",
+        )
+    )
+    return 0 if result.get("completed") else 1
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 参数解析
 # ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +344,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="LLM 模型名称",
     )
     p_proof.set_defaults(func=cmd_proofread)
+
+    # ── agent ────────────────────────────────────
+    p_agent = sub.add_parser(
+        "agent",
+        help="使用 Agent 驱动完整流程（转换 + 切分 + 校对）",
+        description=(
+            "Agent 模式：由 LLM Agent 自主编排整个流程。\n"
+            "Agent 调用工具完成 PDF 转换和章节切分，\n"
+            "并利用自身语言能力直接完成校对（无需独立的 LLM 校对步骤）。\n"
+            "校对前会生成 plan.md，然后逐章逐段进行全量校对。"
+        ),
+    )
+    p_agent.add_argument(
+        "input",
+        help="PDF 文件路径（完整流程）或章节目录（仅校对，需配合 --proofread-only）",
+    )
+    p_agent.add_argument("-o", "--output", default="output", help="输出根目录（默认：output）")
+    p_agent.add_argument("-n", "--name", default=None, help="书名（默认取 PDF 文件名）")
+    p_agent.add_argument(
+        "--converter",
+        choices=["marker", "magic-pdf"],
+        default=None,
+        help="PDF 转换后端（默认：marker）",
+    )
+    p_agent.add_argument("--model", default=None, help="LLM 模型名称")
+    p_agent.add_argument(
+        "--proofread-only",
+        action="store_true",
+        help="仅校对模式：input 为章节目录路径，跳过 PDF 转换和切分",
+    )
+    p_agent.set_defaults(func=cmd_agent)
 
     return parser
 
